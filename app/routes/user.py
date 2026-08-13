@@ -78,7 +78,7 @@ def get_recommendations(user_id):
         return jsonify({'error': 'User preference belum lengkap'}), 400
 
     # Buat vektor user (biner)
-    all_moods = ["sad", "calm", "happy", "energetic"]
+    all_moods = ["Happy", "Relax", "Tense", "Sad"]
     all_genres = list({doc.to_dict().get("genre") for doc in db.collection("songs").stream() if doc.to_dict().get("genre")})
     all_artists = list({doc.to_dict().get("artist_id") for doc in db.collection("songs").stream() if doc.to_dict().get("artist_id")})
 

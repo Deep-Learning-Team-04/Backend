@@ -1,5 +1,7 @@
 venv/
-__pycache__/
 *.pyc
 .env
 gcp-credentials.json
+static/
+uploads/
+app/services/Cnn14_16k_mAP=0.438.pth

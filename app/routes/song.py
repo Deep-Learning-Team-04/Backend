@@ -1,20 +1,25 @@
+import subprocess  
 import os
 import tempfile
 import librosa
 import numpy as np
 import torch
+ 
 
 
 from flask import Blueprint, request, jsonify
 from werkzeug.utils import secure_filename
-from google.cloud import storage, firestore
+# from google.cloud import storage, firestore
+from google.cloud import firestore
 from tensorflow.keras.models import load_model
 
+
+FFMPEG_PATH = r"C:\Users\Weda Wesnawa\AppData\Local\Microsoft\WinGet\Links\ffmpeg.exe"
 
 song_bp = Blueprint("song", __name__)
 
 
-GCS_BUCKET_NAME = "model-deep-learning"
+# GCS_BUCKET_NAME = "model-deep-learning"
 
 
 BASE_DIR     = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -24,11 +29,42 @@ KERAS_PATH   = os.path.join(SERVICE_DIR, "model.h5")
 
 
 db             = firestore.Client()
-storage_client = storage.Client()
+# storage_client = storage.Client()
 
 
 from app.services.Cnn14 import Cnn14
 
+def convert_to_wav(input_path: str) -> str:
+    output_path = os.path.join(
+        tempfile.gettempdir(),
+        f"{os.path.splitext(os.path.basename(input_path))[0]}_converted.wav"
+    )
+
+    command = [
+        FFMPEG_PATH,
+        "-y",
+        "-i", input_path,
+        "-ar", "16000",
+        "-ac", "1",
+        output_path
+    ]
+
+    result = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"FFmpeg gagal mengonversi audio:\n{result.stderr}"
+        )
+
+    if not os.path.exists(output_path):
+        raise RuntimeError("File WAV hasil konversi tidak ditemukan.")
+
+    return output_path
 
 def safe_load_panns(model: torch.nn.Module, ckpt_path: str, device: torch.device):
    """
@@ -149,27 +185,51 @@ def upload_song():
    # simpan sementara
    tmp_path = os.path.join(tempfile.gettempdir(), secure_filename(file.filename))
    file.save(tmp_path)
+   wav_path = None
 
 
-   # Upload ke GCS
-   bucket = storage_client.bucket(GCS_BUCKET_NAME)
-   blob   = bucket.blob(f"songs/{os.path.basename(tmp_path)}")
-   blob.upload_from_filename(tmp_path)
-   public_url = blob.public_url
-
-
-   # Prediksi
    try:
-       features          = extract_panns_embedding(tmp_path)
-       valence, arousal  = keras_model.predict(features, verbose=0)[0]
-       print(f"[DEBUG] {song_name}: val={valence:.3f}, aro={arousal:.3f}")
-       mood              = classify_mood(float(valence), float(arousal))
-   except Exception as e:
-       return jsonify(error=f"Gagal klasifikasi: {e}"), 500
-   finally:
-       if os.path.exists(tmp_path):
-           os.remove(tmp_path)
+        # MP3/WAV → WAV 16 kHz mono
+        wav_path = convert_to_wav(tmp_path)
 
+        print(f"[DEBUG] WAV hasil konversi: {wav_path}")
+
+        # Ekstraksi embedding PANNs
+        features = extract_panns_embedding(wav_path)
+
+        # Prediksi valence dan arousal
+        valence, arousal = keras_model.predict(
+            features,
+            verbose=0
+        )[0]
+
+        print(
+            f"[DEBUG] {song_name}: "
+            f"val={valence:.3f}, "
+            f"aro={arousal:.3f}"
+        )
+
+        # Klasifikasi mood
+        mood = classify_mood(
+            float(valence),
+            float(arousal)
+        )
+
+   except Exception as e:
+        print(f"[ERROR AI] {e}")
+
+        return jsonify(
+            error=f"Gagal klasifikasi: {e}"
+        ), 500
+
+   finally:
+        # Hapus file upload sementara
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+        # Hapus WAV hasil konversi
+        if wav_path and os.path.exists(wav_path):
+            os.remove(wav_path)
 
    # Simpan metadata
    song_ref = db.collection("songs").add({
@@ -177,7 +237,7 @@ def upload_song():
        "genre"    : genre,
        "artist_id": artist_id,
        "mood"     : mood,
-       "file_url" : public_url,
+       "file_url" : tmp_path,
    })[1]
 
 
@@ -188,7 +248,7 @@ def upload_song():
        genre     =genre,
        mood      =mood,
        artist_id =artist_id,
-   ), 201
+   ), 200
 
 
 
